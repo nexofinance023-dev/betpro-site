@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BetPro - Apostas Online</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', sans-serif; 
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 100%);
+            color: white; 
+            min-height: 100vh;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .header { 
+            background: rgba(0,0,0,0.9); 
+            padding: 1rem 0; 
+            position: sticky; 
+            top: 0; 
+            z-index: 100;
+        }
+        .logo { font-size: 2rem; font-weight: bold; color: #00d4ff; }
+        .wallet { background: rgba(255,255,255,0.1); padding: 0.5rem 1rem; border-radius: 25px; }
+        .match-card { 
+            background: rgba(255,255,255,0.05); 
+            border-radius: 20px; 
+            padding: 1.5rem; 
+            margin: 1rem 0; 
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.3s;
+        }
+        .match-card:hover { transform: translateY(-5px); box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+        .odds-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-top: 1rem; }
+        .odd-btn { 
+            background: rgba(255,255,255,0.1); 
+            border: none; 
+            padding: 1rem; 
+            border-radius: 12px; 
+            color: white; 
+            font-weight: bold; 
+            font-size: 1.2rem;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .odd-btn:hover { background: linear-gradient(45deg, #00d4ff, #0099cc); transform: scale(1.05); }
+        .bet-slip { 
+            position: fixed; 
+            right: -350px; 
+            top: 0; 
+            width: 350px; 
+            height: 100vh; 
+            background: rgba(0,0,0,0.95); 
+            transition: right 0.3s; 
+            padding: 2rem; 
+            z-index: 1000;
+        }
+        .bet-slip.open { right: 0; }
+        .place-bet { 
+            width: 100%; 
+            background: linear-gradient(45deg, #ff6b6b, #ee5a52); 
+            border: none; 
+            padding: 1rem; 
+            border-radius: 12px; 
+            color: white; 
+            font-weight: bold; 
+            cursor: pointer;
+        }
+        .live { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.7} }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px,1fr)); gap: 1.5rem; }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="container">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div class="logo">⚽ BetPro</div>
+                <div class="wallet" id="wallet">
+                    💰 R$ <span id="balance">1.250,00</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <div style="margin:2rem 0;">
+            <button class="odd-btn live" onclick="toggleSlip()">📋 Apostas (<span id="slipCount">0</span>)</button>
+        </div>
+        
+        <div class="grid" id="matches">
+            <!-- Matches carregam aqui -->
+        </div>
+    </main>
+
+    <div class="bet-slip" id="betSlip">
+        <h3>Apostas (<span id="slipCount2">0</span>)</h3>
+        <div id="slipItems"></div>
+        <div style="margin-top:2rem;">
+            <input id="stakeInput" type="number" placeholder="Valor R$" style="width:100%;padding:0.8rem;margin-bottom:1rem;border-radius:8px;border:1px solid #444;background:rgba(255,255,255,0.1);color:white;">
+            <button class="place-bet" onclick="placeBet()">🎯 Apostar R$ <span id="betValue">10</span></button>
+        </div>
+    </div>
+
+    <script>
+        let socket = io('https://betpro-backend.onrender.com');
+        let currentBets = [];
+        let balance = 1250;
+
+        // Carregar matches
+        async function loadMatches() {
+            const res = await fetch('https://betpro-backend.onrender.com/api/matches');
+            const matches = await res.json();
+            document.getElementById('matches').innerHTML = matches.map(match => `
+                <div class="match-card">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+                        <span style="background:rgba(255,0,0,0.2);padding:0.3rem 0.8rem;border-radius:20px;font-size:0.9rem;">${match.time}</span>
+                        ${match.odds.status === 'live' ? '<div class="live" style="width:10px;height:10px;background:red;border-radius:50%;animation:pulse 1s infinite;"></div>' : ''}
+                    </div>
+                    <div style="text-align:center;font-size:1.5rem;font-weight:bold;margin:1rem 0;">${match.team1} <span style="font-size:2rem;color:#00d4ff;">VS</span> ${match.team2}</div>
+                    <div class="odds-grid">
+                        <button class="odd-btn" onclick="addBet(${match.id},'Casa',${match.odds.home})">${match.odds.home}<br><small>Casa</small></button>
+                        <button class="odd-btn" onclick="addBet(${match.id},'Empate',${match.odds.draw})">${match.odds.draw}<br><small>Empate</small></button>
+                        <button class="odd-btn" onclick="addBet(${match.id},'Fora',${match.odds.away})">${match.odds.away}<br><small>Fora</small></button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Adicionar aposta
+        function addBet(matchId, selection, odds) {
+            currentBets.push({matchId, selection, odds, stake:10});
+            updateSlip();
+            document.getElementById('slipCount').textContent = currentBets.length;
+            document.getElementById('slipCount2').textContent = currentBets.length;
+        }
+
+        // Atualizar slip
+        function updateSlip() {
+            document.getElementById('slipItems').innerHTML = currentBets.map((bet,i) => `
+                <div style="display:flex;justify-content:space-between;padding:1rem;background:rgba(255,255,255,0.05);margin-bottom:0.5rem;border-radius:8px;">
+                    <div>
+                        <div style="font-weight:bold;">${bet.selection}</div>
+                        <div style="font-size:0.9rem;color:#00d4ff;">${bet.odds}</div>
+                    </div>
+                    <button onclick="removeBet(${i})" style="background:red;color:white;border:none;padding:0.3rem 0.8rem;border-radius:5px;">X</button>
+                </div>
+            `).join('');
+        }
+
+        function removeBet(index) {
+            currentBets.splice(index,1);
+            updateSlip();
+            document.getElementById('slipCount').textContent = currentBets.length;
+            document.getElementById('slipCount2').textContent = currentBets.length;
+        }
+
+        function toggleSlip() {
+            document.getElementById('betSlip').classList.toggle('open');
+        }
+
+        async function placeBet() {
+            const stake = parseInt(document.getElementById('stakeInput').value) || 10;
+            
+            if(currentBets.length === 0) return alert('Adicione apostas!');
+            if(stake > balance) return alert('Saldo insuficiente!');
+            
+            const res = await fetch('https://betpro-backend.onrender.com/api/bets', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({stake, bets: currentBets})
+            });
+            
+            const data = await res.json();
+            balance = data.balance;
+            document.getElementById('balance').textContent = balance.toFixed(2);
+            currentBets = [];
+            updateSlip();
+            alert('✅ Aposta realizada! Novo saldo: R$ ' + balance.toFixed(2));
+        }
+
+        // Socket live odds
+        socket.on('liveOdds', (odds) => {
+            console.log('Odds atualizadas:', odds);
+        });
+
+        // Carregar inicial
+        loadMatches();
+        setInterval(loadMatches, 5000);
+    </script>
+</body>
+</html>
